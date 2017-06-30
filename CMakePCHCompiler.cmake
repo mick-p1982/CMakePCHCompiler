@@ -103,7 +103,7 @@ function(target_precompiled_header) # target [...] header
 			# /FI - force include of precompiled header
 			set(flags "/Yu${win_header} /Fp${win_pch} /FI${win_header}")
 		else()
-			set(flags "-include ${target_dir}/${header}")
+			set(flags "-include \"${target_dir}/${header}\"")
 		endif()
 		set_target_properties(${target} PROPERTIES COMPILE_FLAGS "${flags}")
 
