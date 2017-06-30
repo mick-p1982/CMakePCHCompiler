@@ -212,36 +212,39 @@ endmacro()
 
 # copies all compile definitions, flags and options to .pch subtarget
 function(__watch_pch_last_hook variable access value)
+
 	list(LENGTH CMAKE_PCH_COMPILER_TARGETS length)
-	foreach(index RANGE -${length} -1)
-		list(GET CMAKE_PCH_COMPILER_TARGETS ${index} target)
-		list(GET CMAKE_PCH_COMPILER_TARGET_FLAGS ${index} flags)
-		set(pch_target ${target}.pch)
-		foreach(property
-			COMPILE_DEFINITIONS
-			COMPILE_DEFINITIONS_DEBUG
-			COMPILE_DEFINITIONS_MINSIZEREL
-			COMPILE_DEFINITIONS_RELEASE
-			COMPILE_DEFINITIONS_RELWITHDEBINFO
-			COMPILE_FLAGS
-			COMPILE_OPTIONS
-			)
-			get_target_property(value ${target} ${property})
-			# remove compile flags that we inserted by
-			# target_precompiled_header
-			if(property STREQUAL "COMPILE_FLAGS")
-				string(REPLACE "${flags}" "" value "${value}")
-			endif()
-			if(NOT value STREQUAL "value-NOTFOUND")
-				set_target_properties(
-					"${pch_target}"
-					PROPERTIES
-					"${property}"
-					"${value}"
-					)
-			endif()
+	if(0!=length)	
+		foreach(index RANGE -${length} -1)
+			list(GET CMAKE_PCH_COMPILER_TARGETS ${index} target)
+			list(GET CMAKE_PCH_COMPILER_TARGET_FLAGS ${index} flags)
+			set(pch_target ${target}.pch)
+			foreach(property
+				COMPILE_DEFINITIONS
+				COMPILE_DEFINITIONS_DEBUG
+				COMPILE_DEFINITIONS_MINSIZEREL
+				COMPILE_DEFINITIONS_RELEASE
+				COMPILE_DEFINITIONS_RELWITHDEBINFO
+				COMPILE_FLAGS
+				COMPILE_OPTIONS
+				)
+				get_target_property(value ${target} ${property})
+				# remove compile flags that we inserted by
+				# target_precompiled_header
+				if(property STREQUAL "COMPILE_FLAGS")
+					string(REPLACE "${flags}" "" value "${value}")
+				endif()
+				if(NOT value STREQUAL "value-NOTFOUND")
+					set_target_properties(
+						"${pch_target}"
+						PROPERTIES
+						"${property}"
+						"${value}"
+						)
+				endif()
+			endforeach()
 		endforeach()
-	endforeach()
+	endif()
 endfunction()
 
 # copies all custom compiler settings to PCH compiler
