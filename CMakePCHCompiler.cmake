@@ -51,7 +51,7 @@ function(target_precompiled_header) # target [...] header
 	if(ARGS_REUSE AND NOT TARGET "${ARGS_REUSE}")
 		message(SEND_ERROR "Re-use target \"${ARGS_REUSE}\" does not exist.")
 		return()
-	endif()
+	endif()	
 	foreach(target ${ARGS_UNPARSED_ARGUMENTS})
 		if(NOT TARGET "${target}")
 			message(SEND_ERROR "Target \"${target}\" does not exist.")
@@ -67,6 +67,27 @@ function(target_precompiled_header) # target [...] header
 			set(target_dir
 				${CMAKE_CURRENT_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/${pch_target}.dir
 			)
+		endif()
+		if(MSVC)
+			# ensure pdb goes to the same location, otherwise we get C2859
+			get_filename_component(
+				pdb_dir
+				"${CMAKE_CURRENT_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/${target}.dir"
+				ABSOLUTE
+				)
+			get_filename_component(win_pch "${target_dir}/${header}.pch" ABSOLUTE)
+			get_filename_component(win_header "${header}" ABSOLUTE)
+		else()
+			# HACK: This lets the user include the header in their project
+			# files. Because set_target_properties applies in both targets
+			# GCC will error if the -include directive file is nonexistent.
+			get_filename_component(sym_target "${header}" ABSOLUTE)
+			#WTF??? Must get \ escaped spaces out of both paths for Cygwin.
+			set(args "-E create_symlink \"${sym_target}\"; \"${target_dir}/${header}\"")
+			separate_arguments(args)
+			add_custom_target(${target}.pch.h ALL ${CMAKE_COMMAND} ${args})
+		endif()
+		if(NOT ARGS_REUSE)
 			if(ARGS_TYPE)
 				set(header_type ${ARGS_TYPE})
 			elseif(lang STREQUAL C)
@@ -77,28 +98,30 @@ function(target_precompiled_header) # target [...] header
 				message(WARNING "Unknown header type for language ${lang}")
 				set(header_type "c++-header")
 			endif()
-			if(MSVC)
-				# ensure pdb goes to the same location, otherwise we get C2859
-				get_filename_component(
-					pdb_dir
-					"${CMAKE_CURRENT_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/${target}.dir"
-					ABSOLUTE
-					)
-				get_filename_component(win_pch "${target_dir}/${header}.pch" ABSOLUTE)
-				get_filename_component(win_header "${header}" ABSOLUTE)
+			if(MSVC)			
 				# /Yc - create precompiled header
 				# /Fp - exact location for precompiled header
 				# /Fd - specify directory for pdb output
-				set(flags "/Yc\"${win_header}\" /Fp\"${win_pch}\" /Fd\"${pdb_dir}\"")
+				#https://gitlab.kitware.com/cmake/cmake/issues/17060
+				# don't forget the slash on the end. (How did this ever work?)
+				# /FI - force include of precompiled header
+				set(flags "/Yc\"${win_header}\" /Fp\"${win_pch}\" /FI\"${win_header}\"") # /Fd\"${pdb_dir}\\\\\"
 
+				#3.9.0 is required to work with MSVC2015's XML file because of an MSVC bug.
+				#So, instead of /Fd\"${pdb_dir}\\\\\" why not COMPILE_PDB_OUTPUT_DIRECTORY?
 				set_source_files_properties(
 					${header}
 					PROPERTIES
 					LANGUAGE ${lang}
-					COMPILE_FLAGS ${flags}
+					COMPILE_FLAGS ${flags}					
+					#COMPILE_PDB_OUTPUT_DIRECTORY ${pdb_dir}) ##/Fd\"${pdb_dir}\\\\\"
 					)
 
 				add_library(${pch_target} ${header})
+
+				#Note, this adds debug/release/etc. onto the end.
+				set_target_properties(${pch_target} PROPERTIES
+					COMPILE_PDB_OUTPUT_DIRECTORY ${pdb_dir}) ##/Fd\"${pdb_dir}\\\\\"
 			else()
 				set(flags "-x ${header_type}")
 				set_source_files_properties(
@@ -114,14 +137,19 @@ function(target_precompiled_header) # target [...] header
 		add_dependencies(${target} ${pch_target})
 
 		if(MSVC)
-			get_filename_component(win_pch "${target_dir}/${header}.pch" ABSOLUTE)
-			get_filename_component(win_header "${header}" ABSOLUTE)
+			#Note, this adds debug/release/etc. onto the end.
+			set_target_properties(${target} PROPERTIES
+					COMPILE_PDB_OUTPUT_DIRECTORY ${pdb_dir}) ##/Fd\"${pdb_dir}\\\\\"		
 			# /Yu - use given include as precompiled header
 			# /Fp - exact location for precompiled header
+			# /Fd - specify directory for pdb output
+			#https://gitlab.kitware.com/cmake/cmake/issues/17060
+			# don't forget the slash on the end. (How did this ever work?)
 			# /FI - force include of precompiled header
-			target_compile_options(
-				"${target}" PUBLIC "/Yu\"${win_header}\"" "/Fp\"${win_pch}\"" "/FI\"${win_header}\""
-				)
+			target_compile_options(${target} PUBLIC 
+				"/Yu\"${win_header}\"" 
+				"/Fp\"${win_pch}\"" "/FI\"${win_header}\"" ##"/Fd\"${pdb_dir}\\\\\""
+				)			
 			target_link_libraries(${target} ${pch_target})
 		else()
 			set(flags "-include \"${target_dir}/${header}\"")
@@ -246,9 +274,9 @@ function(__watch_pch_last_hook variable access value)
 				COMPILE_DEFINITIONS_MINSIZEREL
 				COMPILE_DEFINITIONS_RELEASE
 				COMPILE_DEFINITIONS_RELWITHDEBINFO
-			COMPILE_OPTIONS
-			INCLUDE_DIRECTORIES
-			CXX_STANDARD
+				COMPILE_OPTIONS
+				INCLUDE_DIRECTORIES
+				CXX_STANDARD
 			)
 			get_target_property(value ${target} ${property})
 			# remove compile flags that we inserted by
