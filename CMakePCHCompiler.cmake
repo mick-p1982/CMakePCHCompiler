@@ -85,7 +85,7 @@ function(target_precompiled_header) # target [...] header
 			#WTF??? Must get \ escaped spaces out of both paths for Cygwin.
 			set(args "-E create_symlink \"${sym_target}\"; \"${target_dir}/${header}\"")
 			separate_arguments(args)
-			add_custom_target(${target}.pch.h ALL ${CMAKE_COMMAND} ${args})
+			add_custom_target(${target}.pch.h COMMAND ${CMAKE_COMMAND} ${args})
 		endif()
 		if(NOT ARGS_REUSE)
 			if(ARGS_TYPE)
@@ -134,8 +134,6 @@ function(target_precompiled_header) # target [...] header
 			endif()
 		endif()
 
-		add_dependencies(${target} ${pch_target})
-
 		if(MSVC)
 			#Note, this adds debug/release/etc. onto the end.
 			set_target_properties(${target} PROPERTIES
@@ -153,8 +151,14 @@ function(target_precompiled_header) # target [...] header
 			target_link_libraries(${target} ${pch_target})
 		else()
 			set(flags "-include \"${target_dir}/${header}\"")
-			set_target_properties(${target} PROPERTIES COMPILE_FLAGS "${flags}")
+			set_target_properties(${target} PROPERTIES 
+				COMPILE_FLAGS "${flags}")			
+
+			#Generate the symlink before GCC processes -include on the PCH file
+			#included among the target's sources.
+			add_dependencies(${target} ${target}.pch.h)
 		endif()
+		add_dependencies(${target} ${pch_target})
 
 		if(NOT ARGS_REUSE)
 			if(NOT DEFINED CMAKE_PCH_COMPILER_TARGETS)
