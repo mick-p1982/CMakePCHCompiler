@@ -76,16 +76,7 @@ function(target_precompiled_header) # target [...] header
 				ABSOLUTE
 				)
 			get_filename_component(win_pch "${target_dir}/${header}.pch" ABSOLUTE)
-			get_filename_component(win_header "${header}" ABSOLUTE)
-		else()
-			# HACK: This lets the user include the header in their project
-			# files. Because set_target_properties applies in both targets
-			# GCC will error if the -include directive file is nonexistent.
-			get_filename_component(sym_target "${header}" ABSOLUTE)
-			#WTF??? Must get \ escaped spaces out of both paths for Cygwin.
-			set(args "-E create_symlink \"${sym_target}\"; \"${target_dir}/${header}\"")
-			separate_arguments(args)
-			add_custom_target(${target}.pch.h COMMAND ${CMAKE_COMMAND} ${args})
+			get_filename_component(win_header "${header}" ABSOLUTE)		
 		endif()
 		if(NOT ARGS_REUSE)
 			if(ARGS_TYPE)
@@ -137,26 +128,26 @@ function(target_precompiled_header) # target [...] header
 		if(MSVC)
 			#Note, this adds debug/release/etc. onto the end.
 			set_target_properties(${target} PROPERTIES
-					COMPILE_PDB_OUTPUT_DIRECTORY ${pdb_dir}) ##/Fd\"${pdb_dir}\\\\\"		
+				COMPILE_PDB_OUTPUT_DIRECTORY ${pdb_dir}) ##/Fd\"${pdb_dir}\\\\\"		
+			#Careful: set_target_properties is destructive
 			# /Yu - use given include as precompiled header
 			# /Fp - exact location for precompiled header
 			# /Fd - specify directory for pdb output
 			#https://gitlab.kitware.com/cmake/cmake/issues/17060
 			# don't forget the slash on the end. (How did this ever work?)
 			# /FI - force include of precompiled header
-			target_compile_options(${target} PUBLIC 
+			target_compile_options(${target} PRIVATE 
 				"/Yu\"${win_header}\"" 
-				"/Fp\"${win_pch}\"" "/FI\"${win_header}\"" ##"/Fd\"${pdb_dir}\\\\\""
+				"/Fp\"${win_pch}\"" 
+				"/FI\"${win_header}\"" 
+				##"/Fd\"${pdb_dir}\\\\\""
 				)			
 			target_link_libraries(${target} ${pch_target})
 		else()
-			set(flags "-include \"${target_dir}/${header}\"")
-			set_target_properties(${target} PROPERTIES 
-				COMPILE_FLAGS "${flags}")			
-
-			#Generate the symlink before GCC processes -include on the PCH file
-			#included among the target's sources.
-			add_dependencies(${target} ${target}.pch.h)
+			#Careful: set_target_properties is destructive
+			target_compile_options(${target} PRIVATE 
+				-include "${target_dir}/${header}"
+				)
 		endif()
 		add_dependencies(${target} ${pch_target})
 
@@ -293,7 +284,7 @@ function(__watch_pch_last_hook variable access value)
 					if(NOT MSVC)
 						target_compile_options(
 							"${pch_target}"
-							PUBLIC "-std=gnu++${value}"
+							PRIVATE "-std=gnu++${value}"
 							)
 					endif()
 				else()
