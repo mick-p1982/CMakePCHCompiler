@@ -142,7 +142,7 @@ function(target_precompiled_header) # target [...] header
 				"/FI\"${win_header}\"" 
 				##"/Fd\"${pdb_dir}\\\\\""
 				)			
-			target_link_libraries(${target} ${pch_target})
+			target_link_libraries(${target} PRIVATE ${pch_target})
 		else()
 			#Careful: set_target_properties is destructive
 			target_compile_options(${target} PRIVATE 
