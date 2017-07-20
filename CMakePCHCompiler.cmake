@@ -96,7 +96,7 @@ function(target_precompiled_header) # target [...] header
 				#https://gitlab.kitware.com/cmake/cmake/issues/17060
 				# don't forget the slash on the end. (How did this ever work?)
 				# /FI - force include of precompiled header
-				set(flags "/Yc\"${win_header}\" /Fp\"${win_pch}\" /FI\"${win_header}\"") # /Fd\"${pdb_dir}\\\\\"
+				set(flags "/Yc\"${win_header}\" /Fp\"${win_pch}\" /FI\"${win_header}\" /Fd\"${pdb_dir}\\\\\"")
 
 				#3.9.0 is required to work with MSVC2015's XML file because of an MSVC bug.
 				#So, instead of /Fd\"${pdb_dir}\\\\\" why not COMPILE_PDB_OUTPUT_DIRECTORY?
@@ -108,7 +108,7 @@ function(target_precompiled_header) # target [...] header
 					#COMPILE_PDB_OUTPUT_DIRECTORY ${pdb_dir}) ##/Fd\"${pdb_dir}\\\\\"
 					)
 
-				add_library(${pch_target} ${header})
+				add_library(${pch_target} OBJECT ${header})
 
 				#Note, this adds debug/release/etc. onto the end.
 				set_target_properties(${pch_target} PROPERTIES
@@ -125,6 +125,7 @@ function(target_precompiled_header) # target [...] header
 			endif()
 		endif()
 
+		#set(exclude) to be removed later by __watch_pch_last_hook
 		if(MSVC)
 			#Note, this adds debug/release/etc. onto the end.
 			set_target_properties(${target} PROPERTIES
@@ -136,21 +137,26 @@ function(target_precompiled_header) # target [...] header
 			#https://gitlab.kitware.com/cmake/cmake/issues/17060
 			# don't forget the slash on the end. (How did this ever work?)
 			# /FI - force include of precompiled header
+			set(exclude "/Yu${win_header}")
 			target_compile_options(${target} PRIVATE 
-				"/Yu\"${win_header}\"" 
-				"/Fp\"${win_pch}\"" 
-				"/FI\"${win_header}\"" 
-				##"/Fd\"${pdb_dir}\\\\\""
+				#This is quoting the paths. This API is like argv, I'm told.
+				#https://gitlab.kitware.com/cmake/cmake/issues/17060
+				#${exclude}
+				#"/Yu${win_header}" 
+				"/Fp${win_pch}" 
+				"/FI${win_header}" 
+				##COMPILE_PDB_OUTPUT_DIRECTORY requires 3.9.0
+				"/Fd${pdb_dir}\\\\" 
 				)			
-			target_link_libraries(${target} PRIVATE ${pch_target})
+			#Doesn't seem necessary.
+			#target_link_libraries(${target} PRIVATE ${pch_target})
 		else()
-			#Careful: set_target_properties is destructive
-			target_compile_options(${target} PRIVATE 
-				-include "${target_dir}/${header}"
-				)
+			set(exclude -include ${target_dir}/${header})
 		endif()
-		add_dependencies(${target} ${pch_target})
+		target_compile_options(${target} PRIVATE ${exclude})
 
+		add_dependencies(${target} ${pch_target})
+		
 		if(NOT ARGS_REUSE)
 			if(NOT DEFINED CMAKE_PCH_COMPILER_TARGETS)
 				# this will be executed in just before makefile generation
@@ -164,11 +170,8 @@ function(target_precompiled_header) # target [...] header
 				"${CMAKE_PCH_COMPILER_TARGETS}"
 				PARENT_SCOPE
 				)
-			list(APPEND CMAKE_PCH_COMPILER_TARGET_FLAGS ${flags})
-			set(CMAKE_PCH_COMPILER_TARGET_FLAGS
-				"${CMAKE_PCH_COMPILER_TARGET_FLAGS}"
-				PARENT_SCOPE
-				)
+			set_target_properties(${pch_target} PROPERTIES
+				PCH_COMPILER_EXCLUDE "${exclude}")
 		endif()
 	endforeach()
 endfunction()
@@ -225,26 +228,28 @@ macro(__define_pch_compiler lang)
 
 	# copy all initial settings for C/CXXPCH from C/CXX & watch them
 	set(CMAKE_${lang}PCH_FLAGS "${CMAKE_${lang}_FLAGS_INIT}"
-		CACHE STRING
+		CACHE INTERNAL #STRING
 		"Flags used by the compiler during all build types."
 		)
 	variable_watch(CMAKE_${lang}_FLAGS __watch_pch_variable)
 
+	#Marking INTERNAL so these do not appear in cmake-gui.
+	#Note that setting these in the GUI is misleading and pointless.
 	if(NOT CMAKE_NOT_USING_CONFIG_FLAGS)
 		set(CMAKE_${lang}PCH_FLAGS_DEBUG "${CMAKE_${lang}_FLAGS_DEBUG_INIT}"
-			CACHE STRING
+			CACHE INTERNAL #STRING
 			"Flags used by the compiler during debug builds."
 			)
 		set(CMAKE_${lang}PCH_FLAGS_MINSIZEREL "${CMAKE_${lang}_FLAGS_MINSIZEREL_INIT}"
-			CACHE STRING
+			CACHE INTERNAL #STRING
 			"Flags used by the compiler during release builds for minimum size."
 			)
 		set(CMAKE_${lang}PCH_FLAGS_RELEASE "${CMAKE_${lang}_FLAGS_RELEASE_INIT}"
-			CACHE STRING
+			CACHE INTERNAL #STRING
 			"Flags used by the compiler during release builds."
 			)
 		set(CMAKE_${lang}PCH_FLAGS_RELWITHDEBINFO "${CMAKE_${lang}_FLAGS_RELWITHDEBINFO_INIT}"
-			CACHE STRING
+			CACHE INTERNAL #STRING
 			"Flags used by the compiler during release builds with debug info."
 			)
 		variable_watch(CMAKE_${lang}_FLAGS_DEBUG          __watch_pch_variable)
@@ -256,12 +261,10 @@ endmacro()
 
 # copies all compile definitions, flags and options to .pch subtarget
 function(__watch_pch_last_hook variable access value)
-
 	list(LENGTH CMAKE_PCH_COMPILER_TARGETS length)
-	if(0!=length)	
+	if(NOT 0 EQUAL length)			
 		foreach(index RANGE -${length} -1)
-			list(GET CMAKE_PCH_COMPILER_TARGETS ${index} target)
-			list(GET CMAKE_PCH_COMPILER_TARGET_FLAGS ${index} flags)
+			list(GET CMAKE_PCH_COMPILER_TARGETS ${index} target)			
 			set(pch_target ${target}.pch)
 			foreach(property
 				COMPILE_DEFINITIONS
@@ -269,32 +272,41 @@ function(__watch_pch_last_hook variable access value)
 				COMPILE_DEFINITIONS_MINSIZEREL
 				COMPILE_DEFINITIONS_RELEASE
 				COMPILE_DEFINITIONS_RELWITHDEBINFO
+				COMPILE_FLAGS
 				COMPILE_OPTIONS
 				INCLUDE_DIRECTORIES
-				CXX_STANDARD
+				# This list is likely incomplete.
+				# The commented out are done below.
+				#CXX_STANDARD
+				#POSITION_INDEPENDENT_CODE	
+				CXX_STANDARD_REQUIRED			
 			)
-			get_target_property(value ${target} ${property})
-			# remove compile flags that we inserted by
-			# target_precompiled_header
-			if(property STREQUAL "COMPILE_FLAGS")
-				string(REPLACE "${flags}" "" value "${value}")
-			endif()
-			if(NOT value STREQUAL "value-NOTFOUND")
-				if(property STREQUAL "CXX_STANDARD")
-					if(NOT MSVC)
-						target_compile_options(
-							"${pch_target}"
-							PRIVATE "-std=gnu++${value}"
-							)
-					endif()
-				else()
-					set_target_properties(
-						"${pch_target}"
-						PROPERTIES
-						"${property}"
-						"${value}"
-						)
+				get_target_property(value ${target} ${property})
+				if(NOT value STREQUAL "value-NOTFOUND")
+					set_target_properties(${pch_target} PROPERTIES
+						"${property}" "${value}")
 				endif()
+			endforeach()
+
+			# HACK: remove target_precompiled_header inserted flags
+			get_target_property(exclude ${pch_target} PCH_COMPILER_EXCLUDE)
+			get_target_property(value ${pch_target} COMPILE_OPTIONS)
+			string(REPLACE "${exclude}" "" value "${value}")
+			set_target_properties(${pch_target} PROPERTIES 
+				COMPILE_OPTIONS "${value}")
+
+			# difficult cases
+			if(NOT MSVC)
+				get_target_property(value "${target}" CXX_STANDARD)
+				if(value)
+					target_compile_options("${pch_target}" PRIVATE
+						-std=gnu++${value})
+				endif()
+				#Setting POSITION_INDEPENDENT_CODE here has not effect :(
+				get_target_property(value "${target}" POSITION_INDEPENDENT_CODE)
+				if(value AND NOT CYGWIN)
+					target_compile_options("${pch_target}" PRIVATE -fPIC)
+				endif()			
 			endif()
 		endforeach()
 	endif()
