@@ -92,27 +92,22 @@ function(target_precompiled_header) # target [...] header
 			if(MSVC)			
 				# /Yc - create precompiled header
 				# /Fp - exact location for precompiled header
-				# /Fd - specify directory for pdb output
-				#https://gitlab.kitware.com/cmake/cmake/issues/17060
-				# don't forget the slash on the end. (How did this ever work?)
 				# /FI - force include of precompiled header
-				set(flags "/Yc\"${win_header}\" /Fp\"${win_pch}\" /FI\"${win_header}\" /Fd\"${pdb_dir}\\\\\"")
+				set(flags "/Yc\"${win_header}\" /Fp\"${win_pch}\" /FI\"${win_header}\"")
 
-				#3.9.0 is required to work with MSVC2015's XML file because of an MSVC bug.
-				#So, instead of /Fd\"${pdb_dir}\\\\\" why not COMPILE_PDB_OUTPUT_DIRECTORY?
-				set_source_files_properties(
-					${header}
-					PROPERTIES
+				#REMINDER OF EARLIER TRIBULATIONS
+				#The Microsoft.Cpp.Win32.targets script deletes the PCH file from 2010 forward.
+				#/Z7 is much simpler anyway, and I'm not sure what its real disadvantages are.
+				##set(debug_flags " /Fd\"${pdb_dir}\\\\\"")
+				#CMAKE_<lang>_FLAGS_DEBUG must be used. It's set at the top of the script.
+				#set(debug_flags " /Z7")
+				
+				set_source_files_properties(${header} PROPERTIES
 					LANGUAGE ${lang}
-					COMPILE_FLAGS ${flags}					
-					#COMPILE_PDB_OUTPUT_DIRECTORY ${pdb_dir}) ##/Fd\"${pdb_dir}\\\\\"
-					)
+					COMPILE_FLAGS ${flags})
 
 				add_library(${pch_target} OBJECT ${header})
 
-				#Note, this adds debug/release/etc. onto the end.
-				set_target_properties(${pch_target} PROPERTIES
-					COMPILE_PDB_OUTPUT_DIRECTORY ${pdb_dir}) ##/Fd\"${pdb_dir}\\\\\"
 			else()
 				set(flags "-x ${header_type}")
 				set_source_files_properties(
@@ -126,30 +121,15 @@ function(target_precompiled_header) # target [...] header
 		endif()
 
 		#set(exclude) to be removed later by __watch_pch_last_hook
-		if(MSVC)
-			#Note, this adds debug/release/etc. onto the end.
-			set_target_properties(${target} PROPERTIES
-				COMPILE_PDB_OUTPUT_DIRECTORY ${pdb_dir}) ##/Fd\"${pdb_dir}\\\\\"		
+		if(MSVC)	
 			#Careful: set_target_properties is destructive
 			# /Yu - use given include as precompiled header
 			# /Fp - exact location for precompiled header
-			# /Fd - specify directory for pdb output
-			#https://gitlab.kitware.com/cmake/cmake/issues/17060
-			# don't forget the slash on the end. (How did this ever work?)
 			# /FI - force include of precompiled header
 			set(exclude "/Yu${win_header}")
-			target_compile_options(${target} PRIVATE 
-				#This is quoting the paths. This API is like argv, I'm told.
-				#https://gitlab.kitware.com/cmake/cmake/issues/17060
-				#${exclude}
-				#"/Yu${win_header}" 
-				"/Fp${win_pch}" 
-				"/FI${win_header}" 
-				##COMPILE_PDB_OUTPUT_DIRECTORY requires 3.9.0
-				"/Fd${pdb_dir}\\\\" 
-				)			
-			#Doesn't seem necessary.
-			#target_link_libraries(${target} PRIVATE ${pch_target})
+			target_compile_options(${target} PRIVATE "/Fp${win_pch}" "/FI${win_header}")			
+
+			target_sources(${target} PRIVATE $<TARGET_OBJECTS:${pch_target}>)
 		else()
 			set(exclude -include ${target_dir}/${header})
 		endif()
@@ -224,6 +204,12 @@ macro(__define_pch_compiler lang)
 			CMAKE_${lang}PCH_COMPILE_OBJECT
 			${CMAKE_${lang}PCH_COMPILE_OBJECT}
 			)
+		#2017: Enable MSVC2010 and forward to work.
+		#With /Zi Microsoft.Cpp.Win32.targets deletes the PCH file.
+		string(APPEND CMAKE_${lang}_FLAGS_DEBUG " /Z7")
+		string(APPEND CMAKE_${lang}PCH_FLAGS_DEBUG " /Z7")
+		string(APPEND CMAKE_${lang}_FLAGS_RELWITHDEBINFO " /Z7")
+		string(APPEND CMAKE_${lang}PCH_FLAGS_RELWITHDEBINFO " /Z7")
 	endif()
 
 	# copy all initial settings for C/CXXPCH from C/CXX & watch them
@@ -302,7 +288,7 @@ function(__watch_pch_last_hook variable access value)
 					target_compile_options("${pch_target}" PRIVATE
 						-std=gnu++${value})
 				endif()
-				#Setting POSITION_INDEPENDENT_CODE here has not effect :(
+				#Setting POSITION_INDEPENDENT_CODE here has no effect :(
 				get_target_property(value "${target}" POSITION_INDEPENDENT_CODE)
 				if(value AND NOT CYGWIN)
 					target_compile_options("${pch_target}" PRIVATE -fPIC)
