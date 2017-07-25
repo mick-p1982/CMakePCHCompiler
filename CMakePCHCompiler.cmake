@@ -68,13 +68,7 @@ function(target_precompiled_header) # target [...] header
 				${CMAKE_CURRENT_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/${pch_target}.dir
 			)
 		endif()
-		if(MSVC)
-			# ensure pdb goes to the same location, otherwise we get C2859
-			get_filename_component(
-				pdb_dir
-				"${CMAKE_CURRENT_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/${target}.dir"
-				ABSOLUTE
-				)
+		if(MSVC)			
 			get_filename_component(win_pch "${target_dir}/${header}.pch" ABSOLUTE)
 			get_filename_component(win_header "${header}" ABSOLUTE)		
 		endif()
