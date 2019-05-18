@@ -22,15 +22,15 @@
 # project(project_name C CPCH)     # plain C project
 # project(project_name CXX CXXPCH) # C++ project
 
-# Author: Adam Strzelecki <ono@java.pl>
-# Copyright (c) 2014-2015 Adam Strzelecki. All rights reserved.
-# This code is licensed under the MIT License, see README.md.
+# Copyright (c) CMakePCHCompiler Authors. All rights reserved.
+# This code is licensed under the MIT License, see LICENSE.
 
 include(CMakeParseArguments)
 
 function(target_precompiled_header) # target [...] header
                                     # [REUSE reuse_target] [TYPE type]
 	set(lang ${CMAKE_PCH_COMPILER_LANGUAGE})
+
 	if(NOT MSVC AND
 		NOT CMAKE_COMPILER_IS_GNU${lang} AND
 		NOT CMAKE_${lang}_COMPILER_ID STREQUAL "GNU" AND
@@ -42,6 +42,7 @@ function(target_precompiled_header) # target [...] header
 			)
 		return()
 	endif()
+
 	cmake_parse_arguments(ARGS "" "REUSE;TYPE" "" ${ARGN})
 	if(ARGS_SHARED)
 		set(ARGS_REUSE ${ARGS_SHARED})
@@ -51,33 +52,36 @@ function(target_precompiled_header) # target [...] header
 	if(ARGS_REUSE AND NOT TARGET "${ARGS_REUSE}")
 		message(SEND_ERROR "Re-use target \"${ARGS_REUSE}\" does not exist.")
 		return()
-	endif()	
+	endif()
+
 	foreach(target ${ARGS_UNPARSED_ARGUMENTS})
+
 		if(NOT TARGET "${target}")
 			message(SEND_ERROR "Target \"${target}\" does not exist.")
 			return()
 		endif()
+
 		if(ARGS_REUSE)
 			set(pch_target ${ARGS_REUSE}.pch)
 			set(target_dir
 				${CMAKE_CURRENT_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/${pch_target}.dir
-			)
+				)
 		else()
 			set(pch_target ${target}.pch)
 			set(target_dir
 				${CMAKE_CURRENT_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/${pch_target}.dir
-			)
-		endif()
-		if(MSVC)
-			# ensure pdb goes to the same location, otherwise we get C2859
-			get_filename_component(
-				pdb_dir
-				"${CMAKE_CURRENT_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/${target}.dir"
-				ABSOLUTE
 				)
-			get_filename_component(win_pch "${target_dir}/${header}.pch" ABSOLUTE)
-			get_filename_component(win_header "${header}" ABSOLUTE)		
 		endif()
+
+		__compute_pch_build_path(header_build_path "${header}")
+		set(target_dir_header "${target_dir}/${header_build_path}")
+
+		if(MSVC)
+			get_filename_component(abs_pch "${target_dir_header}.pch" ABSOLUTE)
+			get_filename_component(abs_header "${header}" ABSOLUTE)
+		endif()
+
+		# add precompiled header creation flags to PCH target
 		if(NOT ARGS_REUSE)
 			if(ARGS_TYPE)
 				set(header_type ${ARGS_TYPE})
@@ -89,25 +93,18 @@ function(target_precompiled_header) # target [...] header
 				message(WARNING "Unknown header type for language ${lang}")
 				set(header_type "c++-header")
 			endif()
-			if(MSVC)			
+			if(MSVC)
 				# /Yc - create precompiled header
 				# /Fp - exact location for precompiled header
 				# /FI - force include of precompiled header
-				set(flags "/Yc\"${win_header}\" /Fp\"${win_pch}\" /FI\"${win_header}\"")
-
-				#REMINDER OF EARLIER TRIBULATIONS
-				#The Microsoft.Cpp.Win32.targets script deletes the PCH file from 2010 forward.
-				#/Z7 is much simpler anyway, and I'm not sure what its real disadvantages are.
-				##set(debug_flags " /Fd\"${pdb_dir}\\\\\"")
-				#CMAKE_<lang>_FLAGS_DEBUG must be used. It's set at the top of the script.
-				#set(debug_flags " /Z7")
-				
-				set_source_files_properties(${header} PROPERTIES
+				set(flags "/Yc\"${abs_header}\" /Fp\"${abs_pch}\" /FI\"${abs_header}\"")
+				set_source_files_properties(
+					${header}
+					PROPERTIES
 					LANGUAGE ${lang}
-					COMPILE_FLAGS ${flags})
-
+					COMPILE_FLAGS ${flags}
+					)
 				add_library(${pch_target} OBJECT ${header})
-
 			else()
 				set(flags "-x ${header_type}")
 				set_source_files_properties(
@@ -118,25 +115,33 @@ function(target_precompiled_header) # target [...] header
 					)
 				add_library(${pch_target} OBJECT ${header})
 			endif()
+			get_target_property(target_libraries ${target} LINK_LIBRARIES)
+			set_target_properties(${pch_target} PROPERTIES LINK_LIBRARIES "${target_libraries}")
 		endif()
 
-		#set(exclude) to be removed later by __watch_pch_last_hook
-		if(MSVC)	
-			#Careful: set_target_properties is destructive
+		add_dependencies(${target} ${pch_target})
+
+		# add precompiled header insertion flags to regular target
+		if(MSVC)
 			# /Yu - use given include as precompiled header
 			# /Fp - exact location for precompiled header
 			# /FI - force include of precompiled header
-			set(exclude "/Yu${win_header}")
-			target_compile_options(${target} PRIVATE "/Fp${win_pch}" "/FI${win_header}")			
-
+			target_compile_options(
+				${target} PRIVATE "/Fp${abs_pch}" "/FI${abs_header}"
+				)
 			target_sources(${target} PRIVATE $<TARGET_OBJECTS:${pch_target}>)
+			set(flags "/Yu${abs_header}")
 		else()
-			set(exclude -include ${target_dir}/${header})
+			set(flags -include ${target_dir_header})
 		endif()
-		target_compile_options(${target} PRIVATE ${exclude})
 
-		add_dependencies(${target} ${pch_target})
-		
+		if(CMAKE_VERSION VERSION_LESS 3.3)
+			target_compile_options(${target} PRIVATE "${flags}")
+		else()
+			# insert precompiled header as first compile unit only for selected language
+			target_compile_options(${target} PRIVATE "$<$<COMPILE_LANGUAGE:${lang}>:${flags}>")
+		endif()
+
 		if(NOT ARGS_REUSE)
 			if(NOT DEFINED CMAKE_PCH_COMPILER_TARGETS)
 				# this will be executed in just before makefile generation
@@ -150,9 +155,12 @@ function(target_precompiled_header) # target [...] header
 				"${CMAKE_PCH_COMPILER_TARGETS}"
 				PARENT_SCOPE
 				)
+			# save used PCH insertion flags for future prevention of re-insertion (see below)
 			set_target_properties(${pch_target} PROPERTIES
-				PCH_COMPILER_EXCLUDE "${exclude}")
+				PCH_COMPILER_EXCLUDE_FLAGS "${flags}"
+				)
 		endif()
+
 	endforeach()
 endfunction()
 
@@ -169,6 +177,42 @@ macro(__define_pch_compiler lang)
 	set(CMAKE_${lang}PCH_COMPILE_OBJECT ${CMAKE_${lang}_COMPILE_OBJECT})
 	set(CMAKE_INCLUDE_FLAG_${lang}PCH ${CMAKE_INCLUDE_FLAG_${lang}})
 	set(CMAKE_INCLUDE_FLAG_SEP_${lang}PCH ${CMAKE_INCLUDE_FLAG_SEP_${lang}})
+	set(CMAKE_INCLUDE_SYSTEM_FLAG_${lang}PCH ${CMAKE_INCLUDE_SYSTEM_FLAG_${lang}})
+
+	# copy compiler compile options from existing compiler definition
+	foreach(property
+		# NOTE: this list is likely incomplete
+		_VERBOSE_FLAG
+		_SYSROOT_FLAG
+		_OSX_DEPLOYMENT_TARGET_FLAG
+		_SYSTEM_FRAMEWORK_SEARCH_FLAG
+		_FRAMEWORK_SEARCH_FLAG
+		_COMPILE_OPTIONS_PIC
+		_COMPILE_OPTIONS_PIE
+		# C++ standards
+		98_STANDARD_COMPILE_OPTION
+		98_EXTENSION_COMPILE_OPTION
+		11_STANDARD_COMPILE_OPTION  # applies also for C
+		11_EXTENSION_COMPILE_OPTION # "
+		14_STANDARD_COMPILE_OPTION
+		14_EXTENSION_COMPILE_OPTION
+		17_STANDARD_COMPILE_OPTION
+		17_EXTENSION_COMPILE_OPTION
+		20_STANDARD_COMPILE_OPTION
+		20_EXTENSION_COMPILE_OPTION
+		# C standards
+		90_STANDARD_COMPILE_OPTION
+		90_EXTENSION_COMPILE_OPTION
+		99_STANDARD_COMPILE_OPTION
+		99_EXTENSION_COMPILE_OPTION
+		)
+		if(DEFINED CMAKE_${lang}${property})
+			set(CMAKE_${lang}PCH${property} "${CMAKE_${lang}${property}}")
+		endif()
+	endforeach()
+
+	# necessary to enable C/C++ standard compile flags
+	set(CMAKE_${lang}PCH_STANDARD_DEFAULT "${CMAKE_${lang}PCH_STANDARD_COMPUTED_DEFAULT}")
 
 	if(CMAKE_COMPILER_IS_GNU${lang} OR
 		CMAKE_${lang}_COMPILER_ID STREQUAL "GNU"
@@ -180,9 +224,15 @@ macro(__define_pch_compiler lang)
 
 	# setup compiler & platform specific flags same way C/CXX does
 	if(CMAKE_${lang}_COMPILER_ID)
-		include(Platform/${CMAKE_SYSTEM_NAME}-${CMAKE_${lang}_COMPILER_ID}-${lang}PCH
-			OPTIONAL
-			)
+		if(CMAKE_VERSION VERSION_LESS 3.12)
+			include(Platform/${CMAKE_SYSTEM_NAME}-${CMAKE_${lang}_COMPILER_ID}-${lang}PCH
+				OPTIONAL
+				)
+		else()
+			include(Platform/${CMAKE_EFFECTIVE_SYSTEM_NAME}-${CMAKE_${lang}_COMPILER_ID}-${lang}PCH
+				OPTIONAL
+				)
+		endif()
 	endif()
 
 	# just use all settings from C/CXX compiler
@@ -204,8 +254,8 @@ macro(__define_pch_compiler lang)
 			CMAKE_${lang}PCH_COMPILE_OBJECT
 			${CMAKE_${lang}PCH_COMPILE_OBJECT}
 			)
-		#2017: Enable MSVC2010 and forward to work.
-		#With /Zi Microsoft.Cpp.Win32.targets deletes the PCH file.
+		# force /Z7 for MSVC2010 and forward to make it work,
+		# as with /Zi Microsoft.Cpp.Win32.targets deletes the PCH file
 		string(APPEND CMAKE_${lang}_FLAGS_DEBUG " /Z7")
 		string(APPEND CMAKE_${lang}PCH_FLAGS_DEBUG " /Z7")
 		string(APPEND CMAKE_${lang}_FLAGS_RELWITHDEBINFO " /Z7")
@@ -213,14 +263,13 @@ macro(__define_pch_compiler lang)
 	endif()
 
 	# copy all initial settings for C/CXXPCH from C/CXX & watch them
+	# NOTE: marking INTERNAL instead of STRING, so these do not appear in cmake-gui
 	set(CMAKE_${lang}PCH_FLAGS "${CMAKE_${lang}_FLAGS_INIT}"
 		CACHE INTERNAL #STRING
 		"Flags used by the compiler during all build types."
 		)
 	variable_watch(CMAKE_${lang}_FLAGS __watch_pch_variable)
 
-	#Marking INTERNAL so these do not appear in cmake-gui.
-	#Note that setting these in the GUI is misleading and pointless.
 	if(NOT CMAKE_NOT_USING_CONFIG_FLAGS)
 		set(CMAKE_${lang}PCH_FLAGS_DEBUG "${CMAKE_${lang}_FLAGS_DEBUG_INIT}"
 			CACHE INTERNAL #STRING
@@ -248,54 +297,45 @@ endmacro()
 # copies all compile definitions, flags and options to .pch subtarget
 function(__watch_pch_last_hook variable access value)
 	list(LENGTH CMAKE_PCH_COMPILER_TARGETS length)
-	if(NOT 0 EQUAL length)			
-		foreach(index RANGE -${length} -1)
-			list(GET CMAKE_PCH_COMPILER_TARGETS ${index} target)			
-			set(pch_target ${target}.pch)
-			foreach(property
-				COMPILE_DEFINITIONS
-				COMPILE_DEFINITIONS_DEBUG
-				COMPILE_DEFINITIONS_MINSIZEREL
-				COMPILE_DEFINITIONS_RELEASE
-				COMPILE_DEFINITIONS_RELWITHDEBINFO
-				COMPILE_FLAGS
-				COMPILE_OPTIONS
-				INCLUDE_DIRECTORIES
-				# This list is likely incomplete.
-				# The commented out are done below.
-				#CXX_STANDARD
-				#POSITION_INDEPENDENT_CODE	
-				CXX_STANDARD_REQUIRED			
+	if(length EQUAL 0)
+		return()
+	endif()
+	foreach(index RANGE -${length} -1)
+		list(GET CMAKE_PCH_COMPILER_TARGETS ${index} target)
+		set(pch_target ${target}.pch)
+		foreach(property
+			# NOTE: this list is likely incomplete
+			COMPILE_DEFINITIONS
+			COMPILE_DEFINITIONS_DEBUG
+			COMPILE_DEFINITIONS_MINSIZEREL
+			COMPILE_DEFINITIONS_RELEASE
+			COMPILE_DEFINITIONS_RELWITHDEBINFO
+			COMPILE_FLAGS
+			COMPILE_OPTIONS
+			INCLUDE_DIRECTORIES
+			CXX_STANDARD
+			CXX_STANDARD_REQUIRED
+			CXX_EXTENSIONS
+			C_STANDARD
+			C_STANDARD_REQUIRED
+			C_EXTENSIONS
+			POSITION_INDEPENDENT_CODE
 			)
-				get_target_property(value ${target} ${property})
-				if(NOT value STREQUAL "value-NOTFOUND")
-					set_target_properties(${pch_target} PROPERTIES
-						"${property}" "${value}")
+			get_target_property(value ${target} ${property})
+			if(NOT value STREQUAL "value-NOTFOUND")
+				string(REGEX REPLACE "(^|_)(C|CXX)(_|$)" "\\1\\2PCH\\3" property "${property}")
+				# make sure we don't insert wrong PCH flags into PCH target COMPILE_OPTIONS
+				if(property STREQUAL "COMPILE_OPTIONS")
+					get_target_property(flags ${pch_target} PCH_COMPILER_EXCLUDE_FLAGS)
+					string(REPLACE "${flags}" "" value "${value}")
 				endif()
-			endforeach()
-
-			# HACK: remove target_precompiled_header inserted flags
-			get_target_property(exclude ${pch_target} PCH_COMPILER_EXCLUDE)
-			get_target_property(value ${pch_target} COMPILE_OPTIONS)
-			string(REPLACE "${exclude}" "" value "${value}")
-			set_target_properties(${pch_target} PROPERTIES 
-				COMPILE_OPTIONS "${value}")
-
-			# difficult cases
-			if(NOT MSVC)
-				get_target_property(value "${target}" CXX_STANDARD)
-				if(value)
-					target_compile_options("${pch_target}" PRIVATE
-						-std=gnu++${value})
-				endif()
-				#Setting POSITION_INDEPENDENT_CODE here has no effect :(
-				get_target_property(value "${target}" POSITION_INDEPENDENT_CODE)
-				if(value AND NOT CYGWIN)
-					target_compile_options("${pch_target}" PRIVATE -fPIC)
-				endif()			
+				# copy new target property value into PCH target
+				set_target_properties(${pch_target} PROPERTIES
+					"${property}" "${value}"
+					)
 			endif()
 		endforeach()
-	endif()
+	endforeach()
 endfunction()
 
 # copies all custom compiler settings to PCH compiler
@@ -333,3 +373,25 @@ macro(__configure_pch_compiler lang)
 		${CMAKE_PLATFORM_INFO_DIR}/CMake${lang}PCHCompiler.cmake
 		)
 endmacro()
+
+# replicates behavior of cmLocalGenerator::GetObjectFileNameWithoutTarget
+# derived from CMake source code FindCUDA.cmake module
+function(__compute_pch_build_path build_path path)
+	get_filename_component(path "${path}" ABSOLUTE)
+	string(FIND "${path}" "${CMAKE_CURRENT_BINARY_DIR}" binary_dir_pos)
+	string(FIND "${path}" "${CMAKE_CURRENT_SOURCE_DIR}" source_dir_pos)
+	# cmLocalGenerator::GetObjectFileNameWithoutTarget
+	# cmStateDirectory::ConvertToRelPathIfNotContained
+	# cmStateDirectory::ContainsBoth
+	if(binary_dir_pos EQUAL 0)
+		file(RELATIVE_PATH path "${CMAKE_CURRENT_BINARY_DIR}" "${path}")
+	elseif(source_dir_pos EQUAL 0)
+		file(RELATIVE_PATH path "${CMAKE_CURRENT_SOURCE_DIR}" "${path}")
+	endif()
+	# cmLocalGenerator::CreateSafeUniqueObjectFileName
+	string(REGEX REPLACE "^[/]+" "" path "${path}")
+	string(REPLACE ":" "_" path "${path}")
+	string(REPLACE "../" "__/" path "${path}")
+	string(REPLACE " " "_" path "${path}")
+	set(${build_path} "${path}" PARENT_SCOPE)
+endfunction()
